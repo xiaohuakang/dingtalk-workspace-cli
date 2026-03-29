@@ -238,7 +238,7 @@ curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace
 ## 功能特性
 
 <details>
-<summary><strong>智能输入纠错</strong> — 自动修正 AI 模型常见的参数错误 <code>v1.0.1</code></summary>
+<summary><strong>智能输入纠错</strong> — 自动修正 AI 模型常见的参数错误</summary>
 
 内置 Pipeline 纠错引擎，支持命名风格转换、粘连参数拆分、拼写模糊匹配：
 
@@ -267,7 +267,7 @@ dws aitable record query --base-id BASE_ID --tabel-id TABLE_ID       # --tabel-i
 </details>
 
 <details>
-<summary><strong>jq 过滤 & 字段筛选</strong> — 精确控制输出，减少 token 消耗 <code>v1.0.1</code></summary>
+<summary><strong>jq 过滤 & 字段筛选</strong> — 精确控制输出，减少 token 消耗</summary>
 
 ```bash
 # 内置 jq 表达式
@@ -281,7 +281,7 @@ dws aitable record query --base-id BASE_ID --table-id TABLE_ID --fields invocati
 </details>
 
 <details>
-<summary><strong>Schema 自省</strong> — 调用前查询任意工具的参数结构 <code>v1.0.1</code></summary>
+<summary><strong>Schema 自省</strong> — 调用前查询任意工具的参数结构</summary>
 
 ```bash
 dws schema                                              # 列出所有产品和工具
@@ -293,7 +293,7 @@ dws schema --jq '.products[].id'                        # 提取所有产品 ID
 </details>
 
 <details>
-<summary><strong>管道 & 文件输入</strong> — 从文件或 stdin 读取 flag 值 <code>v1.0.1</code></summary>
+<summary><strong>管道 & 文件输入</strong> — 从文件或 stdin 读取 flag 值</summary>
 
 ```bash
 # 从文件读取消息内容
