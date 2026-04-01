@@ -951,8 +951,33 @@ type SendApplyResponse struct {
 	Result    bool   `json:"result"`
 }
 
+// cliAuthCheckMaxRetries is the number of attempts for CheckCLIAuthEnabled
+// to tolerate transient network errors before propagating the failure.
+const cliAuthCheckMaxRetries = 3
+
 // CheckCLIAuthEnabled checks if CLI authorization is enabled for the current corp.
+// It retries up to cliAuthCheckMaxRetries times on transient errors to avoid
+// false negatives caused by momentary network issues.
 func (p *OAuthProvider) CheckCLIAuthEnabled(ctx context.Context, accessToken string) (*CLIAuthStatus, error) {
+	var lastErr error
+	for attempt := 0; attempt < cliAuthCheckMaxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+		status, err := p.doCheckCLIAuthEnabled(ctx, accessToken)
+		if err == nil {
+			return status, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("check CLI auth status failed after %d attempts: %w", cliAuthCheckMaxRetries, lastErr)
+}
+
+func (p *OAuthProvider) doCheckCLIAuthEnabled(ctx context.Context, accessToken string) (*CLIAuthStatus, error) {
 	url := GetMCPBaseURL() + CLIAuthEnabledPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -1044,9 +1069,33 @@ type ClientIDResponse struct {
 	Result    string `json:"result"`
 }
 
+// fetchClientIDMaxRetries is the number of attempts for FetchClientIDFromMCP
+// to tolerate transient network errors before propagating the failure.
+const fetchClientIDMaxRetries = 3
+
 // FetchClientIDFromMCP fetches the CLI client ID from MCP server.
 // This is used when no client ID is provided via flags, config, or env vars.
+// It retries up to fetchClientIDMaxRetries times on transient errors.
 func FetchClientIDFromMCP(ctx context.Context) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < fetchClientIDMaxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+		id, err := doFetchClientIDFromMCP(ctx)
+		if err == nil {
+			return id, nil
+		}
+		lastErr = err
+	}
+	return "", fmt.Errorf("fetch client ID failed after %d attempts: %w", fetchClientIDMaxRetries, lastErr)
+}
+
+func doFetchClientIDFromMCP(ctx context.Context) (string, error) {
 	url := GetMCPBaseURL() + ClientIDPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
