@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
@@ -75,6 +76,13 @@ type runtimeRunner struct {
 }
 
 func (r *runtimeRunner) Run(ctx context.Context, invocation executor.Invocation) (executor.Result, error) {
+	totalStart := time.Now()
+	defer func() {
+		if os.Getenv("DWS_PERF_DEBUG") != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "[PERF] runtimeRunner.Run total: %v\n", time.Since(totalStart))
+		}
+	}()
+
 	if r.loader == nil || r.transport == nil {
 		return r.fallback.Run(ctx, invocation)
 	}
@@ -118,7 +126,11 @@ func (r *runtimeRunner) Run(ctx context.Context, invocation executor.Invocation)
 }
 
 func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, invocation executor.Invocation) (executor.Result, error) {
+	authStart := time.Now()
 	tc := r.transport.WithAuth(r.resolveAuthToken(ctx), resolveIdentityHeaders())
+	if os.Getenv("DWS_PERF_DEBUG") != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] resolveAuthToken: %v\n", time.Since(authStart))
+	}
 
 	if invocation.DryRun {
 		return executor.Result{
@@ -149,7 +161,11 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 		}, nil
 	}
 
+	callStart := time.Now()
 	callResult, err := tc.CallTool(ctx, endpoint, invocation.Tool, invocation.Params)
+	if os.Getenv("DWS_PERF_DEBUG") != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] MCP CallTool: %v\n", time.Since(callStart))
+	}
 	if err != nil {
 		if isAuthError(err) {
 			if fn := edition.Get().OnAuthError; fn != nil {
@@ -161,12 +177,14 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 	}
 
 	if callResult.IsError {
+		diag := transport.ExtractServerDiagnosticsFromMap(callResult.Content)
 		mcpErr := apperrors.NewAPI(
 			extractMCPErrorMessage(callResult),
 			apperrors.WithOperation("tools/call"),
 			apperrors.WithReason("mcp_tool_error"),
 			apperrors.WithServerKey(invocation.CanonicalProduct),
 			apperrors.WithHint("MCP tool returned a business error; check tool parameters and refer to skill documentation."),
+			apperrors.WithServerDiag(diag),
 		)
 		captureRuntimeFailure(invocation, mcpErr, mcpErr)
 		return executor.Result{}, mcpErr
@@ -178,11 +196,13 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 	}
 
 	if bizErr := detectBusinessError(callResult.Content); bizErr != "" {
+		diag := transport.ExtractServerDiagnosticsFromMap(callResult.Content)
 		return executor.Result{}, apperrors.NewAPI(bizErr,
 			apperrors.WithOperation("tools/call"),
 			apperrors.WithReason("business_error"),
 			apperrors.WithServerKey(invocation.CanonicalProduct),
 			apperrors.WithHint("The API returned a business-level error. Check required parameters and values."),
+			apperrors.WithServerDiag(diag),
 		)
 	}
 
@@ -209,25 +229,56 @@ func resolveRuntimeAuthToken(ctx context.Context, explicitToken string) string {
 	if token := strings.TrimSpace(explicitToken); token != "" {
 		return token
 	}
-	configDir := defaultConfigDir()
-	provider := authpkg.NewOAuthProvider(configDir, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	configureOAuthProviderCompatibility(provider, configDir)
-	token, tokenErr := provider.GetAccessToken(ctx)
-	if tokenErr == nil && strings.TrimSpace(token) != "" {
-		return strings.TrimSpace(token)
-	}
-	// If the error is a decryption failure (corrupted data), surface
-	// it immediately instead of falling back to empty token.
-	if tokenErr != nil && errors.Is(tokenErr, authpkg.ErrTokenDecryption) {
-		slog.Error(tokenErr.Error())
-		return ""
-	}
-	manager := authpkg.NewManager(configDir, nil)
-	configureLegacyAuthManagerCompatibility(manager)
-	if token, _, err := manager.GetToken(); err == nil && strings.TrimSpace(token) != "" {
-		return strings.TrimSpace(token)
-	}
-	return ""
+	// Use cached token to avoid repeated Keychain access (~70ms per call)
+	return getCachedRuntimeToken(ctx)
+}
+
+// Cached token state for process lifetime
+var (
+	cachedRuntimeToken     string
+	cachedRuntimeTokenOnce sync.Once
+)
+
+// getCachedRuntimeToken returns a cached access token, loading it only once per process.
+// This avoids repeated Keychain access which takes ~70ms each time.
+func getCachedRuntimeToken(ctx context.Context) string {
+	cachedRuntimeTokenOnce.Do(func() {
+		loadStart := time.Now()
+		defer func() {
+			if os.Getenv("DWS_PERF_DEBUG") != "" {
+				_, _ = fmt.Fprintf(os.Stderr, "[PERF] getCachedRuntimeToken (first load): %v\n", time.Since(loadStart))
+			}
+		}()
+
+		configDir := defaultConfigDir()
+		provider := authpkg.NewOAuthProvider(configDir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		configureOAuthProviderCompatibility(provider, configDir)
+		token, tokenErr := provider.GetAccessToken(ctx)
+		if tokenErr == nil && strings.TrimSpace(token) != "" {
+			cachedRuntimeToken = strings.TrimSpace(token)
+			return
+		}
+		// If the error is a decryption failure (corrupted data), record it
+		if tokenErr != nil && errors.Is(tokenErr, authpkg.ErrTokenDecryption) {
+			slog.Error(tokenErr.Error())
+			return
+		}
+		// Try legacy manager as fallback
+		manager := authpkg.NewManager(configDir, nil)
+		configureLegacyAuthManagerCompatibility(manager)
+		if token, _, err := manager.GetToken(); err == nil && strings.TrimSpace(token) != "" {
+			cachedRuntimeToken = strings.TrimSpace(token)
+			return
+		}
+	})
+	return cachedRuntimeToken
+}
+
+// ResetRuntimeTokenCache clears the cached token, forcing a reload on next access.
+// This should be called after login/logout operations.
+func ResetRuntimeTokenCache() {
+	cachedRuntimeTokenOnce = sync.Once{}
+	cachedRuntimeToken = ""
 }
 
 func newRuntimeContentScanner() safety.Scanner {

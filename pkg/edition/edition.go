@@ -78,8 +78,8 @@ type Hooks struct {
 	TokenProvider func(ctx context.Context, fallback func() (string, error)) (string, error)
 
 	// --- product & endpoint ---
-	StaticServers         func() []ServerInfo                         // non-nil → skip Market discovery
-	VisibleProducts       func() []string                             // non-nil → override help visibility
+	StaticServers         func() []ServerInfo                          // non-nil → skip Market discovery
+	VisibleProducts       func() []string                              // non-nil → override help visibility
 	RegisterExtraCommands func(root *cobra.Command, caller ToolCaller) // register overlay-only commands
 }
 
