@@ -31,6 +31,7 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/executor"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/safety"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/transport"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
 
 const (
@@ -191,6 +192,11 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 		_, _ = fmt.Fprintf(os.Stderr, "[PERF] MCP CallTool: %v\n", callDuration)
 	}
 	if err != nil {
+		if isAuthError(err) {
+			if fn := edition.Get().OnAuthError; fn != nil {
+				_ = fn(defaultConfigDir(), err)
+			}
+		}
 		captureRuntimeFailure(invocation, err, err)
 		return executor.Result{}, err
 	}
@@ -335,6 +341,14 @@ func runtimeFlagEnabled(raw string, defaultValue bool) bool {
 	}
 }
 
+func isAuthError(err error) bool {
+	var appErr *apperrors.Error
+	if errors.As(err, &appErr) {
+		return appErr.Category == apperrors.CategoryAuth
+	}
+	return false
+}
+
 func productEndpointOverride(productID string) (string, bool) {
 	key := "DINGTALK_" + strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(productID), "-", "_")) + "_MCP_URL"
 	value := strings.TrimSpace(os.Getenv(key))
@@ -364,6 +378,9 @@ func resolveIdentityHeaders() map[string]string {
 		if v != "" {
 			headers[k] = v
 		}
+	}
+	if fn := edition.Get().MergeHeaders; fn != nil {
+		headers = fn(headers)
 	}
 	return headers
 }
