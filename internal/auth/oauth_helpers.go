@@ -951,16 +951,17 @@ type SendApplyResponse struct {
 	Result    bool   `json:"result"`
 }
 
-// cliAuthCheckMaxRetries is the number of attempts for CheckCLIAuthEnabled
+// mcpRequestMaxRetries is the maximum number of attempts for MCP API calls
+// (e.g. /cli/cliAuthEnabled, /cli/clientId, /cli/superAdmin, /cli/sendCliAuthApply)
 // to tolerate transient network errors before propagating the failure.
-const cliAuthCheckMaxRetries = 3
+const mcpRequestMaxRetries = 3
 
 // CheckCLIAuthEnabled checks if CLI authorization is enabled for the current corp.
 // It retries up to cliAuthCheckMaxRetries times on transient errors to avoid
 // false negatives caused by momentary network issues.
 func (p *OAuthProvider) CheckCLIAuthEnabled(ctx context.Context, accessToken string) (*CLIAuthStatus, error) {
 	var lastErr error
-	for attempt := 0; attempt < cliAuthCheckMaxRetries; attempt++ {
+	for attempt := 0; attempt < mcpRequestMaxRetries; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -974,7 +975,7 @@ func (p *OAuthProvider) CheckCLIAuthEnabled(ctx context.Context, accessToken str
 		}
 		lastErr = err
 	}
-	return nil, fmt.Errorf("check CLI auth status failed after %d attempts: %w", cliAuthCheckMaxRetries, lastErr)
+	return nil, fmt.Errorf("check CLI auth status failed after %d attempts: %w", mcpRequestMaxRetries, lastErr)
 }
 
 func (p *OAuthProvider) doCheckCLIAuthEnabled(ctx context.Context, accessToken string) (*CLIAuthStatus, error) {
@@ -1008,7 +1009,27 @@ func (p *OAuthProvider) doCheckCLIAuthEnabled(ctx context.Context, accessToken s
 }
 
 // GetSuperAdmins fetches the list of corp super admins.
+// It retries up to mcpRequestMaxRetries times on transient errors.
 func GetSuperAdmins(ctx context.Context, accessToken string) (*SuperAdminResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt < mcpRequestMaxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+		result, err := doGetSuperAdmins(ctx, accessToken)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("get super admins failed after %d attempts: %w", mcpRequestMaxRetries, lastErr)
+}
+
+func doGetSuperAdmins(ctx context.Context, accessToken string) (*SuperAdminResponse, error) {
 	url := GetMCPBaseURL() + SuperAdminPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -1035,7 +1056,27 @@ func GetSuperAdmins(ctx context.Context, accessToken string) (*SuperAdminRespons
 }
 
 // SendCliAuthApply sends a CLI auth apply request to the specified admin.
+// It retries up to mcpRequestMaxRetries times on transient errors.
 func SendCliAuthApply(ctx context.Context, accessToken, adminStaffID string) (*SendApplyResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt < mcpRequestMaxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+		result, err := doSendCliAuthApply(ctx, accessToken, adminStaffID)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("send CLI auth apply failed after %d attempts: %w", mcpRequestMaxRetries, lastErr)
+}
+
+func doSendCliAuthApply(ctx context.Context, accessToken, adminStaffID string) (*SendApplyResponse, error) {
 	url := GetMCPBaseURL() + SendCliAuthApplyPath + "?adminStaffId=" + adminStaffID
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -1069,16 +1110,12 @@ type ClientIDResponse struct {
 	Result    string `json:"result"`
 }
 
-// fetchClientIDMaxRetries is the number of attempts for FetchClientIDFromMCP
-// to tolerate transient network errors before propagating the failure.
-const fetchClientIDMaxRetries = 3
-
 // FetchClientIDFromMCP fetches the CLI client ID from MCP server.
 // This is used when no client ID is provided via flags, config, or env vars.
-// It retries up to fetchClientIDMaxRetries times on transient errors.
+// It retries up to mcpRequestMaxRetries times on transient errors.
 func FetchClientIDFromMCP(ctx context.Context) (string, error) {
 	var lastErr error
-	for attempt := 0; attempt < fetchClientIDMaxRetries; attempt++ {
+	for attempt := 0; attempt < mcpRequestMaxRetries; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -1092,7 +1129,7 @@ func FetchClientIDFromMCP(ctx context.Context) (string, error) {
 		}
 		lastErr = err
 	}
-	return "", fmt.Errorf("fetch client ID failed after %d attempts: %w", fetchClientIDMaxRetries, lastErr)
+	return "", fmt.Errorf("fetch client ID failed after %d attempts: %w", mcpRequestMaxRetries, lastErr)
 }
 
 func doFetchClientIDFromMCP(ctx context.Context) (string, error) {

@@ -633,3 +633,194 @@ func TestFetchClientIDFromMCP_Success(t *testing.T) {
 	}
 	t.Logf("✅ /cli/clientId normal success: id=%s", id)
 }
+
+// ---------------------------------------------------------------------------
+// 7. GetSuperAdmins: /cli/superAdmin error handling
+// ---------------------------------------------------------------------------
+
+func TestGetSuperAdmins_ServerError_RetriesAndFails(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	setupMCPConfigDir(t, srv.URL)
+
+	_, err := GetSuperAdmins(context.Background(), "fake-token")
+
+	if err == nil {
+		t.Fatal("expected error when /cli/superAdmin returns 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed after 3 attempts") {
+		t.Fatalf("error should mention retry exhaustion, got: %s", err)
+	}
+	if c := calls.Load(); c != 3 {
+		t.Fatalf("expected 3 retry attempts, got %d", c)
+	}
+	t.Logf("✅ /cli/superAdmin 500 → retried 3 times: error=%q", err)
+}
+
+func TestGetSuperAdmins_TransientThenSuccess(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n <= 2 {
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SuperAdminResponse{
+			Success: true,
+			Result:  []SuperAdmin{{StaffID: "a1", Name: "张三"}, {StaffID: "a2", Name: "李四"}},
+		})
+	}))
+	defer srv.Close()
+
+	setupMCPConfigDir(t, srv.URL)
+
+	result, err := GetSuperAdmins(context.Background(), "fake-token")
+
+	if err != nil {
+		t.Fatalf("expected success after transient failures, got error: %v", err)
+	}
+	if !result.Success || len(result.Result) != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if c := calls.Load(); c != 3 {
+		t.Fatalf("expected 3 attempts, got %d", c)
+	}
+	t.Logf("✅ /cli/superAdmin transient then success: attempts=%d, admins=%v", calls.Load(), result.Result)
+}
+
+func TestGetSuperAdmins_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-user-access-token") != "good-token" {
+			t.Errorf("missing access token header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SuperAdminResponse{
+			Success: true,
+			Result:  []SuperAdmin{{StaffID: "admin1", Name: "王五"}},
+		})
+	}))
+	defer srv.Close()
+
+	setupMCPConfigDir(t, srv.URL)
+
+	result, err := GetSuperAdmins(context.Background(), "good-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Result) != 1 || result.Result[0].Name != "王五" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	t.Logf("✅ /cli/superAdmin normal success: admins=%v", result.Result)
+}
+
+// ---------------------------------------------------------------------------
+// 8. SendCliAuthApply: /cli/sendCliAuthApply error handling
+// ---------------------------------------------------------------------------
+
+func TestSendCliAuthApply_ServerError_RetriesAndFails(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	setupMCPConfigDir(t, srv.URL)
+
+	_, err := SendCliAuthApply(context.Background(), "fake-token", "admin1")
+
+	if err == nil {
+		t.Fatal("expected error when /cli/sendCliAuthApply returns 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed after 3 attempts") {
+		t.Fatalf("error should mention retry exhaustion, got: %s", err)
+	}
+	if c := calls.Load(); c != 3 {
+		t.Fatalf("expected 3 retry attempts, got %d", c)
+	}
+	t.Logf("✅ /cli/sendCliAuthApply 500 → retried 3 times: error=%q", err)
+}
+
+func TestSendCliAuthApply_TransientThenSuccess(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n <= 1 {
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SendApplyResponse{Success: true, Result: true})
+	}))
+	defer srv.Close()
+
+	setupMCPConfigDir(t, srv.URL)
+
+	result, err := SendCliAuthApply(context.Background(), "fake-token", "admin1")
+
+	if err != nil {
+		t.Fatalf("expected success after transient failure, got error: %v", err)
+	}
+	if !result.Success || !result.Result {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if c := calls.Load(); c != 2 {
+		t.Fatalf("expected 2 attempts, got %d", c)
+	}
+	t.Logf("✅ /cli/sendCliAuthApply transient then success: attempts=%d", calls.Load())
+}
+
+func TestSendCliAuthApply_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-user-access-token") != "good-token" {
+			t.Errorf("missing access token header")
+		}
+		if !strings.Contains(r.URL.RawQuery, "adminStaffId=admin123") {
+			t.Errorf("missing or wrong adminStaffId param: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SendApplyResponse{Success: true, Result: true})
+	}))
+	defer srv.Close()
+
+	setupMCPConfigDir(t, srv.URL)
+
+	result, err := SendCliAuthApply(context.Background(), "good-token", "admin123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success || !result.Result {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	t.Logf("✅ /cli/sendCliAuthApply normal success: result=%+v", result)
+}
+
+func TestSendCliAuthApply_BusinessError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SendApplyResponse{
+			Success:   false,
+			ErrorCode: "invalid_admin",
+			ErrorMsg:  "admin not found",
+			Result:    false,
+		})
+	}))
+	defer srv.Close()
+
+	setupMCPConfigDir(t, srv.URL)
+
+	result, err := SendCliAuthApply(context.Background(), "fake-token", "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected success=false for business error")
+	}
+	t.Logf("✅ /cli/sendCliAuthApply business error: errorCode=%s, errorMsg=%s", result.ErrorCode, result.ErrorMsg)
+}
