@@ -17,39 +17,13 @@ package runtimetoken
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"io"
-	"log/slog"
-	"strings"
 
-	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/app"
 )
 
 // ResolveAccessToken returns a non-empty bearer token using the same sources
-// as MCP: explicitToken when non-empty, else OAuth access_token, else legacy token file.
-func ResolveAccessToken(ctx context.Context, configDir string, explicitToken string) (string, error) {
-	if t := strings.TrimSpace(explicitToken); t != "" {
-		return t, nil
-	}
-	if strings.TrimSpace(configDir) == "" {
-		return "", fmt.Errorf("config directory is empty")
-	}
-	disc := slog.New(slog.NewTextHandler(io.Discard, nil))
-	provider := authpkg.NewOAuthProvider(configDir, disc)
-	token, err := provider.GetAccessToken(ctx)
-	if err == nil && strings.TrimSpace(token) != "" {
-		return strings.TrimSpace(token), nil
-	}
-	if err != nil && errors.Is(err, authpkg.ErrTokenDecryption) {
-		return "", err
-	}
-	manager := authpkg.NewManager(configDir, nil)
-	if legacy, _, merr := manager.GetToken(); merr == nil && strings.TrimSpace(legacy) != "" {
-		return strings.TrimSpace(legacy), nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return "", fmt.Errorf("no credentials found, run: dws auth login")
+// and caching rules as MCP when configDir matches the active edition directory;
+// see app.ResolveAuxiliaryAccessToken.
+func ResolveAccessToken(ctx context.Context, configDir, explicitToken string) (string, error) {
+	return app.ResolveAuxiliaryAccessToken(ctx, configDir, explicitToken)
 }
