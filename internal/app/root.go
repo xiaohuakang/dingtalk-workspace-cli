@@ -925,10 +925,21 @@ func CloseFileLogger() {
 }
 
 // newPipelineEngine creates and configures the pipeline engine with
-// the standard set of handlers for model input correction.
+// handlers for all five pipeline phases. The phases execute in order:
+// Register → PreParse → PostParse → PreRequest → PostResponse.
+//
+// Phases are invoked at their respective integration points:
+//   - Register:     during command tree construction (newMCPCommand)
+//   - PreParse:     before Cobra parses raw argv (RunPreParse)
+//   - PostParse:    after Cobra parsing, before validation (canonical RunE)
+//   - PreRequest:   after validation, before JSON-RPC dispatch (canonical RunE)
+//   - PostResponse: after transport returns, before stdout (canonical RunE)
 func newPipelineEngine() *pipeline.Engine {
 	engine := pipeline.NewEngine()
 	engine.RegisterAll(
+		// Register handler runs during command tree building.
+		handlers.RegisterHandler{},
+
 		// PreParse handlers run in order: alias → sticky → paramname.
 		// Alias normalises case first (--userId → --user-id), then
 		// sticky splits glued values (--limit100 → --limit 100), then
@@ -939,6 +950,12 @@ func newPipelineEngine() *pipeline.Engine {
 
 		// PostParse handlers normalise structured values.
 		handlers.ParamValueHandler{},
+
+		// PreRequest handler inspects the validated payload before dispatch.
+		handlers.PreRequestHandler{},
+
+		// PostResponse handler processes the response before output.
+		handlers.PostResponseHandler{},
 	)
 	return engine
 }
